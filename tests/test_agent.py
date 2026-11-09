@@ -109,7 +109,7 @@ get_weather_tool = StructuredTool.from_function(
     name = "get_weather",
     description = "获取指定城市指定日期的天气信息。",
     args_schema =WeatherInput,
-    )
+    ) # type: ignore
 weather_tool = [get_weather_tool]
 agent.register_tools(weather_tool)
 
