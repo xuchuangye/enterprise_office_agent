@@ -13,6 +13,7 @@ import logging
 from langchain_classic.agents import AgentExecutor, create_react_agent
 from langchain_community.llms import Tongyi
 from langchain_core.prompts import PromptTemplate
+from langchain_core.tools.render import render_text_description_and_args
 # 新版 langchain 包已移除经典 Memory 模块。
 # from langchain.memory import ConversationBufferWindowMemory
 # langchain-community 不包含 ConversationBufferWindowMemory（它只提供第三方集成，如数据库连接器）
@@ -153,7 +154,12 @@ class OfficeAgent:
             else:
                 memory.chat_memory.add_ai_message(msg["content"])
         # 创建React代理的Agent
-        agent = create_react_agent(llm=self.llm, tools=tools, prompt=prompt) # type: ignore
+        # 使用 render_text_description_and_args，让 {tools} 中同时包含参数 Schema，
+        # 否则 ReAct 路径同样容易编造参数名
+        agent = create_react_agent(
+            llm=self.llm, tools=tools, prompt=prompt,
+            tools_renderer=render_text_description_and_args
+        ) # type: ignore
         # 创建执行器
         executor = AgentExecutor(
             agent=agent, tools=tools, memory=memory,
@@ -170,11 +176,29 @@ class OfficeAgent:
         complex_keywords = ["分析", "报告", "生成", "图表", "可视化", "工作总结", "会议纪要", "审批"]
         return any(kw in user_input for kw in complex_keywords)
 
+    @staticmethod
+    def _prepare_tool_params(tool: Any, params: Any) -> Dict[str, Any]:
+        """
+        执行前按工具的 args_schema 再校验/规范化一次参数。
+        规划器已经校验过 LLM 生成的步骤，这里是最后一道防线，
+        防止错误的字段名（如 query 而不是 question）直接传给工具。
+        """
+        schema = getattr(tool, "args_schema", None)
+        if schema is None:
+            return params
+        if not isinstance(params, dict):
+            raise ValueError(
+                f"工具 {tool.name} 的参数必须是 JSON 对象，收到: {type(params).__name__}"
+            )
+        validated = schema.model_validate(params)
+        return validated.model_dump(exclude_none=True)
+
     # 复杂任务使用任务规划器
     def _execute_planned_task(self, user_input: str, session_id: str,
                                user_id: Optional[str] = None) -> Dict[str, Any]:
         """多步骤任务执行（使用任务规划器）---双路径的执行策略"""
-        available_tools = self.tool_registry.get_tool_names()
+        # 传入工具实例而不是名称，让规划器能拿到描述和参数 Schema
+        available_tools = self.tool_registry.list_tools()
         task_steps = self.task_planner.plan(user_input, available_tools)
         if not task_steps:
             # ReAct适合执行简单任务
@@ -197,19 +221,22 @@ class OfficeAgent:
                 continue
 
             try:
+                # 用 args_schema 规范化参数后再调用，避免字段名不匹配
+                tool_params = self._prepare_tool_params(tool, params)
                 # 修复：使用标准调用 tool.invoke(params)
-                observation = tool.invoke(params)
+                observation = tool.invoke(tool_params)
                 all_steps.append({
                     "tool": tool_name,
-                    "tool_input": params,
+                    "tool_input": tool_params,
                     "observation": observation
                 })
-                final_output += f"\n[步骤{i+1} 完成] {tool_name}: {observation[:200]}"
+                # 保留完整结果，避免知识问答等内容被截断
+                final_output += f"\n[步骤{i+1} 完成] {tool_name}: {observation}"
                 self.memory_manager.mysql.log_tool_call(
                     session_id=session_id,
                     user_id=user_id or "anonymous",
                     tool_name=tool_name, # type: ignore
-                    params=params,
+                    params=tool_params,
                     result=str(observation)[:1000]
                 )
             except Exception as e:

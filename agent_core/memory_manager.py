@@ -203,7 +203,7 @@ load_dotenv()
 api_key = os.getenv("DASHSCOPE_API_KEY")
 
 from langchain_openai import OpenAI
-llm = OpenAI(model="qwen-plus", api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+llm = OpenAI(model="qwen-plus", api_key=str(api_key), base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
 if __name__ == "__main__":
     memoryManager = MemoryManager()
     print(memoryManager.generate_summary("chat:6f987630-2973-41d5-b775-5b27ce47be01", llm=llm))  # 测试生成摘要
