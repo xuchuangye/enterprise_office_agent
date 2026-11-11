@@ -3,6 +3,16 @@
 统一管理短期记忆（会话上下文）和长期记忆（用户偏好）
 支持Redis持久化，失败时降级为内存存储
 """
+
+import sys
+from pathlib import Path
+# 1. 获取当前文件(test_agent.py)的绝对路径
+current_file = Path(__file__).resolve()
+# 2. 向上回退两级目录: tests -> enterprise_office_agent (项目根目录)
+project_root = current_file.parent.parent
+# 3. 将项目根目录插入到系统路径的最前面(索引0)
+# 这确保了Python会优先在你的项目中查找模块，而不是去site-packages里找
+sys.path.insert(0, str(project_root))
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
@@ -184,4 +194,16 @@ class MemoryManager:
             logger.exception(f"生成摘要失败: {e}")
             return ""
 
-        
+# 单例初始化MemoryManager
+import os
+from dotenv import load_dotenv
+# 加载环境变量
+load_dotenv()
+# 获取API Key
+api_key = os.getenv("DASHSCOPE_API_KEY")
+
+from langchain_openai import OpenAI
+llm = OpenAI(model="qwen-plus", api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+if __name__ == "__main__":
+    memoryManager = MemoryManager()
+    print(memoryManager.generate_summary("chat:6f987630-2973-41d5-b775-5b27ce47be01", llm=llm))  # 测试生成摘要

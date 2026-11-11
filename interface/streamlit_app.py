@@ -52,11 +52,11 @@ def init_agent() -> OfficeAgent:
 agent = init_agent()
 
 # 会话状态管理的初始化
-# session_state状态管理机制，类似于浏览器的本地缓存
+# session_state状态管理机制，类似于浏览器的本地缓存，每次点击按钮就会刷新界面，不具备保存的能力
 # 没有状态管理机制，用户输入会被清空，聊天历史会丢失，上传的文件会消失
 
 # 状态管理的流程：
-# 1. 交互，点击按钮，输入文本，Streamlit重新运行脚本，从session_state中读取状态，更新界面，保存新状态到st.session_state
+# 1. 用户交互，点击按钮，输入文本，Streamlit重新运行脚本，从session_state中读取状态，更新界面，保存新状态到st.session_state
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 if "user_id" not in st.session_state:
@@ -140,7 +140,7 @@ if mode == "💬 智能对话":
             final_input = f"{prompt_text}，文件路径: {st.session_state.uploaded_file_path}"
         
         if prompt_text.strip():
-            # 添加用户消息，其实就是通过状态管理更新状态
+            # 添加用户消息，其实就是通过状态管理的更新状态
             st.session_state.messages.append({"role": "user", "content": prompt_text})
             with st.chat_message("user"):
                 st.markdown(prompt_text)

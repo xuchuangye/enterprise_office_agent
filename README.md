@@ -583,7 +583,7 @@ Streamlit只需编写简单的Python代码，即可快速构建并部署美观�
 ```python
 # 会话状态管理的初始化
 # session_state状态管理机制，类似于浏览器的本地缓存
-# 没有状态管理机制，用户输入会被清空，聊天历史会丢失，上传的文件会消失
+# 没有状态管理机制，刷新页面之后，用户输入会被清空，聊天历史会丢失，上传的文件会消失
 
 # 状态管理的流程：
 # 1. 交互，点击按钮，输入文本，Streamlit重新运行脚本，从session_state中读取状态，更新界面，保存新状态到st.session_state
@@ -733,6 +733,13 @@ async def chat(request: TaskRequest):
 
 
 ```
+
+## 前端Streamlit
+@st.cache_resource，缓存向量存储实例，避免重复加载Embedding模型和向量数据库以及缓存Agent实例，避免重复加载模型，提升性能，减少启动时间
+
+@st.session_state，会话状态管理，用于存储对话历史信息，防止文件重复上传（如果上传文件不在会话状态管理中，就设置为set集合，防止重复上传）
+
+
 ## 接口测试
 可通过http://localhost:8000/docs访问自动生成的交互式接口文档进行调试
 

@@ -39,10 +39,15 @@ class Settings(BaseSettings):
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
+
+
     
     # ========== 向量数据库配置 ==========
     CHROMA_PERSIST_DIR: str = "data/chroma_db"
     EMBEDDING_MODEL_NAME: str = "models/bge-small-zh"  # 中文Embedding模型
+
+    # Pinecone配置
+    PINECONE_API_KEY: str = "your_pinecone_api_key"
     
     # ========== 工具配置 ==========
     # 数据分析工具
