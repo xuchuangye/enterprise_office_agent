@@ -148,9 +148,11 @@ class DataAnalyzerTool(BaseTool):
         # 生成报告
         try:
             results = []
-            results.append("=" * 50)
-            results.append("数据分柝报告")
-            results.append("=" * 50)
+            # 不要用整行 "=" 分隔：前端用 Markdown 渲染，
+            # 纯 "=" 行会被当作上一段的标题下划线，导致整段字体被放大
+            results.append("─" * 50)
+            results.append("数据分析报告")
+            results.append("─" * 50)
 
             df = self._data
             results.append(f"\n【数据概览】")

@@ -11,6 +11,7 @@ import streamlit as st
 from typing import List, Dict, Any
 import uuid
 import json
+import re
 
 from agent_core import OfficeAgent
 from tools import (
@@ -19,6 +20,17 @@ from tools import (
     APITool,
     KnowledgeQATool
 )
+
+# Markdown 会把整行只有 "=" 或 "-" 的行当作上一段的标题下划线（setext heading）。
+# 工具输出里的纯文本分隔线（如 "====..."）会把整段内容渲染成超大字号标题。
+_SETEXT_UNDERLINE_RE = re.compile(r"^(?:={3,}|-{3,})[ \t]*$", re.MULTILINE)
+
+
+def safe_markdown(text: str) -> str:
+    """转义纯符号分隔行，避免工具原始输出被 Markdown 误解析成标题"""
+    if not text:
+        return text
+    return _SETEXT_UNDERLINE_RE.sub(lambda m: "\\" + m.group(0), text)
 
 # 页面配置
 st.set_page_config(
@@ -112,7 +124,7 @@ if mode == "💬 智能对话":
     for msg in st.session_state.messages:
         # chat_message的列表：'user', 'assistant', 'ai', 'human'
         with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+            st.markdown(safe_markdown(msg["content"]))
     
     # 输入框（支持文件上传）
     prompt = st.chat_input(
@@ -162,9 +174,9 @@ if mode == "💬 智能对话":
                 # 结果区域用 Markdown 渲染，支持列表、标题等
                 if len(output_text) > 800:
                     with st.expander("📄 完整结果", expanded=False):
-                        st.markdown(output_text)
+                        st.markdown(safe_markdown(output_text))
                 else:
-                    st.markdown(output_text)
+                    st.markdown(safe_markdown(output_text))
 
                 # 执行步骤折叠展示
                 # 折叠的优势：界面简单，不占用空间，可展开，用户交互体验比较好
