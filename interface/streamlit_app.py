@@ -287,18 +287,49 @@ if mode == "💬 智能对话":
                 if file_name:
                     st.caption(f"📎 {file_name}")
 
-            # 调用 Agent
+            # 调用 Agent（流式输出：LLM 生成的文字边生成边显示）
             with st.chat_message("assistant"):
-                with st.spinner("正在思考中..."):
-                    result = agent.run(
+                status_box = st.empty()
+                answer_box = st.empty()
+                streamed_parts: List[str] = []
+                answer_started = False
+                error_message = None
+                result: Optional[Dict[str, Any]] = None
+
+                try:
+                    for event in agent.stream(
                         final_input,
                         st.session_state.session_id,
                         st.session_state.user_id
-                    )
+                    ):
+                        event_type = event.get("type")
+                        if event_type == "status":
+                            status_box.caption(f"⏳ {event.get('message', '')}")
+                        elif event_type == "token":
+                            if not answer_started:
+                                answer_started = True
+                                status_box.caption("✍️ 正在生成回答…")
+                            streamed_parts.append(event.get("content", ""))
+                            answer_box.markdown(safe_markdown("".join(streamed_parts)))
+                        elif event_type == "result":
+                            result = event
+                        elif event_type == "error":
+                            error_message = event.get("message", "未知错误")
+                finally:
+                    # 流式内容只是过程预览，结束后统一用与历史消息相同的渲染逻辑重建
+                    status_box.empty()
+                    answer_box.empty()
+
+                if result is None:
+                    result = {
+                        "output": f"执行失败: {error_message or '未返回结果'}",
+                        "steps": [],
+                        "planned": False,
+                    }
 
                 # ---- 实时展示区域（与历史渲染共用同一套逻辑）----
                 output_text = result.get("output", "")
-                steps = normalize_steps(result.get("intermediate_steps"))
+                steps = normalize_steps(result.get("steps"))
                 planned = bool(result.get("planned"))
                 render_assistant_result(output_text, steps, planned)
 
@@ -435,11 +466,14 @@ elif mode == "🔧 工具测试":
                 top_k = st.slider("🔍 检索数量", 1, 10, 4, help="返回最相关的文档片段数量")
                 
                 if st.button("🚀 提问", type="primary"):
-                    with st.spinner("正在检索知识库..."):
-                        result = tool._run(question=question, top_k=top_k) # type: ignore
                     with st.container(border=True):
                         st.markdown("#### 📋 回答结果")
-                        st.markdown(result)
+                        # 知识问答的答案由 LLM 生成，这里逐 token 渲染
+                        answer_box = st.empty()
+                        answer_parts: List[str] = []
+                        for chunk in tool.stream_result(question=question, top_k=top_k): # type: ignore[attr-defined]
+                            answer_parts.append(chunk)
+                            answer_box.markdown(safe_markdown("".join(answer_parts)))
 
 elif mode == "📚 知识库管理":
     st.subheader("知识库文档管理")

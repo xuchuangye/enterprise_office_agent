@@ -27,6 +27,11 @@ ENV PIP_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu"
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.docker.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
+# 容器镜像里没有中文字体，matplotlib 生成图表时中文会变成方块。
+# 单独放在 pip 层之后，修改字体不会导致依赖重新安装。
+RUN apt-get update && apt-get install -y --no-install-recommends fonts-wqy-microhei \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY . .
 
 RUN mkdir -p data/knowledge_base data/documents data/visualizations data/chroma_db

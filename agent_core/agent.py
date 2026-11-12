@@ -4,8 +4,10 @@
 支持复杂任务的自动规划与多步骤执行
 """
 import os
+import queue
+import threading
 import uuid
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator
 import logging
 
 # LangChain 1.0+ 版本对 Agents 模块进行了重大重构，AgentExecutor 和 create_react_agent 已从主包 langchain 中正式移除
@@ -26,8 +28,12 @@ from .memory_manager import MemoryManager
 from .tool_registry import ToolRegistry
 from .reflection import Reflection
 from .planner import TaskPlanner
+from .streaming import StreamingCallbackHandler, EventSink
 
 logger = logging.getLogger(__name__)
+
+# stream() 的结束哨兵：worker 线程执行完毕后放入队列，主线程据此结束迭代
+_STREAM_END = object()
 
 
 class CustomConversationMemory(ConversationBufferWindowMemory):
@@ -202,10 +208,13 @@ class OfficeAgent:
     # 复杂任务使用任务规划器
     def _execute_planned_task(self, user_input: str, session_id: str,
                                user_id: Optional[str] = None,
-                               conversation_summary: str = "") -> Dict[str, Any]:
+                               conversation_summary: str = "",
+                               event_sink: Optional[EventSink] = None) -> Dict[str, Any]:
         """多步骤任务执行（使用任务规划器）---双路径的执行策略"""
         # 传入工具实例而不是名称，让规划器能拿到描述和参数 Schema
         available_tools = self.tool_registry.list_tools()
+        if event_sink:
+            event_sink({"type": "status", "message": "正在规划任务步骤…"})
         task_steps = self.task_planner.plan(
             user_input, available_tools, conversation_summary=conversation_summary
         )
@@ -213,7 +222,8 @@ class OfficeAgent:
             # ReAct适合执行简单任务
             return self._execute_single_step(
                 user_input, session_id, user_id,
-                conversation_summary=conversation_summary
+                conversation_summary=conversation_summary,
+                event_sink=event_sink
             )
 
         logger.info(f"任务规划成功，共 {len(task_steps)} 个步骤")
@@ -224,6 +234,11 @@ class OfficeAgent:
             tool_name = step.get("tool")
             params = step.get("params", {})
             logger.info(f"执行步骤 {i+1}/{len(task_steps)}: {tool_name}")
+            if event_sink:
+                event_sink({
+                    "type": "status",
+                    "message": f"正在执行步骤 {i+1}/{len(task_steps)}：{tool_name}…"
+                })
 
             tool = self.tool_registry.get_tool(tool_name) # type: ignore
             if not tool:
@@ -235,8 +250,16 @@ class OfficeAgent:
             try:
                 # 用 args_schema 规范化参数后再调用，避免字段名不匹配
                 tool_params = self._prepare_tool_params(tool, params)
-                # 修复：使用标准调用 tool.invoke(params)
-                observation = tool.invoke(tool_params)
+                if event_sink and getattr(tool, "streams_llm_output", False):
+                    # LLM 生成输出的工具（如知识问答）一边生成一边推给前端
+                    chunks: List[str] = []
+                    for chunk in tool.stream_result(**tool_params): # type: ignore[attr-defined]
+                        chunks.append(chunk)
+                        event_sink({"type": "token", "content": chunk})
+                    observation = "".join(chunks)
+                else:
+                    # 修复：使用标准调用 tool.invoke(params)
+                    observation = tool.invoke(tool_params)
                 all_steps.append({
                     "tool": tool_name,
                     "tool_input": tool_params,
@@ -267,7 +290,8 @@ class OfficeAgent:
     # 任务简单使用ReAct
     def _execute_single_step(self, user_input: str, session_id: str,
                              user_id: Optional[str] = None,
-                             conversation_summary: str = "") -> Dict[str, Any]:
+                             conversation_summary: str = "",
+                             event_sink: Optional[EventSink] = None) -> Dict[str, Any]:
         """单步任务（ReAct Agent）"""
         try:
             # 创建Agent执行器
@@ -277,8 +301,14 @@ class OfficeAgent:
                 prefs = self.memory_manager.get_all_preferences(user_id)
                 if prefs:
                     user_context = f"\n用户偏好信息：{prefs}"
+            if event_sink:
+                event_sink({"type": "status", "message": "正在思考并选择工具…"})
+            # ReAct 代理内部走 LLM.stream，挂回调即可在阻塞调用期间拿到 token
+            config = None
+            if event_sink:
+                config = {"callbacks": [StreamingCallbackHandler(event_sink)]}
             # 执行Agent，获取结果和中间步骤
-            result = executor.invoke({"input": user_input + user_context})
+            result = executor.invoke({"input": user_input + user_context}, config=config)
             steps = result.get("intermediate_steps", [])
             for step in steps:
                 if len(step) >= 2:
@@ -305,10 +335,11 @@ class OfficeAgent:
                 "error": str(e)
             }
     # Agent的主入口
-    def run(self, user_input: str, session_id: Optional[str] = None,
-            user_id: Optional[str] = None, use_planner: Optional[bool] = None) -> Dict[str, Any]:
-        if session_id is None:
-            session_id = str(uuid.uuid4())
+    def _run_internal(self, user_input: str, session_id: str,
+                      user_id: Optional[str] = None,
+                      use_planner: Optional[bool] = None,
+                      event_sink: Optional[EventSink] = None) -> Dict[str, Any]:
+        """同步执行主流程；event_sink 不为空时额外推送进度和 token 事件"""
         if not self.llm:
             return {
                 "output": "LLM未初始化，请配置API Key后重试。",
@@ -316,6 +347,8 @@ class OfficeAgent:
                 "session_id": session_id
             }
         # 先滚动更新摘要：只压缩短期窗口之外的历史，无新内容时不会调用 LLM
+        if event_sink:
+            event_sink({"type": "status", "message": "正在整理历史对话…"})
         conversation_summary = ""
         try:
             conversation_summary = self.memory_manager.update_summary(
@@ -330,14 +363,90 @@ class OfficeAgent:
             logger.info("使用任务规划器处理请求")
             return self._execute_planned_task(
                 user_input, session_id, user_id,
-                conversation_summary=conversation_summary
+                conversation_summary=conversation_summary,
+                event_sink=event_sink
             )
         else:
             logger.info("使用ReAct Agent处理请求")
             return self._execute_single_step(
                 user_input, session_id, user_id,
-                conversation_summary=conversation_summary
+                conversation_summary=conversation_summary,
+                event_sink=event_sink
             )
+
+    def run(self, user_input: str, session_id: Optional[str] = None,
+            user_id: Optional[str] = None, use_planner: Optional[bool] = None) -> Dict[str, Any]:
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+        return self._run_internal(user_input, session_id, user_id, use_planner)
+
+    @staticmethod
+    def _serialize_steps(steps: Any) -> List[Dict[str, Any]]:
+        """把 ReAct 元组 / 规划器字典统一成可 JSON 序列化的步骤结构"""
+        serialized: List[Dict[str, Any]] = []
+        for step in steps or []:
+            if isinstance(step, dict):
+                serialized.append({
+                    "tool": step.get("tool", "未知工具"),
+                    "tool_input": step.get("tool_input") or step.get("params") or {},
+                    "observation": str(step.get("observation", step.get("error", ""))),
+                })
+            elif isinstance(step, (tuple, list)) and len(step) >= 2:
+                action, observation = step[0], step[1]
+                tool_input = getattr(action, "tool_input", "")
+                serialized.append({
+                    "tool": getattr(action, "tool", "未知工具"),
+                    "tool_input": tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)},
+                    "observation": str(observation),
+                })
+        return serialized
+
+    def stream(self, user_input: str, session_id: Optional[str] = None,
+               user_id: Optional[str] = None,
+               use_planner: Optional[bool] = None) -> Iterator[Dict[str, Any]]:
+        """
+        流式执行，逐事件产出，供 Streamlit / FastAPI 消费：
+
+        - {"type": "status", "message": ...}  执行进度
+        - {"type": "token", "content": ...}   LLM 生成文本的增量
+        - {"type": "result", "output": ..., "steps": [...], "planned": bool, "session_id": ...}
+        - {"type": "error", "message": ...}   执行异常
+
+        AgentExecutor.invoke 是阻塞调用，这里放到后台线程执行，
+        通过线程安全队列把事件转交给调用方迭代。
+        """
+        if session_id is None:
+            session_id = str(uuid.uuid4())
+        events: "queue.Queue[Any]" = queue.Queue()
+
+        def sink(event: Dict[str, Any]) -> None:
+            events.put(event)
+
+        def worker() -> None:
+            try:
+                result = self._run_internal(
+                    user_input, session_id, user_id, use_planner, event_sink=sink
+                )
+                sink({
+                    "type": "result",
+                    "output": result.get("output", ""),
+                    "session_id": result.get("session_id", session_id),
+                    "planned": bool(result.get("planned")),
+                    "steps": self._serialize_steps(result.get("intermediate_steps")),
+                })
+            except Exception as e:
+                logger.exception("流式执行失败")
+                sink({"type": "error", "message": str(e), "session_id": session_id})
+            finally:
+                events.put(_STREAM_END)
+
+        threading.Thread(target=worker, name="agent-stream", daemon=True).start()
+
+        while True:
+            event = events.get()
+            if event is _STREAM_END:
+                break
+            yield event
 
     def clear_session(self, session_id: str):
         self.memory_manager.clear_session(session_id)

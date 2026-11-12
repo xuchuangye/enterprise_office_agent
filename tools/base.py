@@ -4,7 +4,7 @@
 """
 from langchain_core.tools import BaseTool as LangChainBaseTool
 from abc import abstractmethod
-from typing import Any, Optional, Type
+from typing import Any, ClassVar, Iterator, Optional, Type
 from pydantic import BaseModel
 
 import logging
@@ -25,6 +25,10 @@ class BaseTool(LangChainBaseTool):
     - _arun: 异步执行方法（可选）
     - args_schema: Pydantic 参数模型（可选）
     """
+    # 标记该工具的输出是否由 LLM 生成、支持逐 token 流式返回。
+    # 只有真正实现 stream_result 的工具才应置为 True
+    streams_llm_output: ClassVar[bool] = False
+
     # 使用Pydantic做参数校验
     # 用户传入错误的类型参数，没有参数校验，可能会导致系统直接崩溃或者产生不可控不可预期的结果
     # 所以Pydantic参数校验的价值
@@ -47,7 +51,16 @@ class BaseTool(LangChainBaseTool):
     async def _arun(self, *args: Any, **kwargs: Any) -> str:
         """异步执行（默认调用同步方法）"""
         return self._run(*args, **kwargs)
-    
+
+    def stream_result(self, *args: Any, **kwargs: Any) -> Iterator[str]:
+        """
+        流式执行工具，逐块返回文本。
+
+        默认退化为一次性返回完整结果；输出由 LLM 生成的工具（如知识问答）
+        可以重写本方法，用 LLM.stream() 边生成边返回，降低用户等待焦虑。
+        """
+        yield self._run(*args, **kwargs)
+
     @abstractmethod # 强制子类实现
     def _execute(self, *args, **kwargs) -> str:
         """子类实现具体的工具逻辑，需要子类重写"""

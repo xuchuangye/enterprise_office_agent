@@ -8,6 +8,7 @@ import json
 from docx.shared import Inches
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import font_manager
 from typing import Optional, Dict, Any, Type
 from pydantic import BaseModel, Field
 import logging
@@ -17,9 +18,37 @@ from .base import BaseTool
 
 logger = logging.getLogger(__name__)
 
-# 设置Matplotlib的中文字体和负号显示，确保生成的图表能够正确显示中文和负数
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-plt.rcParams['axes.unicode_minus'] = False
+def _setup_cjk_font() -> None:
+    """
+    选择当前系统可用的中文字体。
+
+    Windows 本地有 SimHei/微软雅黑，但 Linux 容器里通常一个都没有，
+    直接写死字体会让图表里的中文全部变成方块（豆腐块），
+    所以这里按候选顺序探测，最后再回退到 DejaVu Sans。
+    """
+    # Docker 镜像里安装的是文泉驿微米黑；手动 addfont 可以避免 matplotlib
+    # 字体缓存过期导致新装字体不被识别
+    for font_path in (
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    ):
+        if os.path.exists(font_path):
+            try:
+                font_manager.fontManager.addfont(font_path)
+            except Exception:
+                logger.warning(f"加载中文字体失败: {font_path}", exc_info=True)
+
+    candidates = [
+        "Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei", "Noto Sans CJK SC", "Noto Sans CJK JP",
+    ]
+    available = {f.name for f in font_manager.fontManager.ttflist}
+    plt.rcParams['font.sans-serif'] = [f for f in candidates if f in available] + ["DejaVu Sans"]
+    # 负号用 ASCII 连字符，避免部分中文字体缺少 Unicode 负号字形
+    plt.rcParams['axes.unicode_minus'] = False
+
+
+_setup_cjk_font()
 
 
 class DataAnalyzerInput(BaseModel):
@@ -117,6 +146,11 @@ class DataAnalyzerTool(BaseTool):
         else:
             return f"未知操作: {action}，支持的操作: read_data, clean_data, analyze, visualize, generate_report"
 
+    @staticmethod
+    def _plain_scalar(value: Any) -> Any:
+        """把 numpy 标量转成 Python 原生类型，避免输出 np.int64(4)"""
+        return value.item() if hasattr(value, "item") else value
+
     def _get_analysis_summary(self) -> str:
         """获取分析结果的摘要，用于填充报告"""
         if self._data is None:
@@ -167,7 +201,8 @@ class DataAnalyzerTool(BaseTool):
 
                 if len(numeric_cols) > 1:
                     results.append(f"\n【相关性分析】")
-                    corr = df[numeric_cols].corr().round(2) # type: ignore
+                    # 常量列/全空列算出的相关系数是 NaN，统一显示为 0.0
+                    corr = df[numeric_cols].corr().round(2).fillna(0.0) # type: ignore
                     results.append(corr.to_string())
 
             text_cols = df.select_dtypes(include=['object']).columns
@@ -175,7 +210,12 @@ class DataAnalyzerTool(BaseTool):
                 results.append(f"\n【分类统计】")
                 for col in text_cols[:5]:
                     value_counts = df[col].value_counts().head(5)
-                    results.append(f"{col}: {dict(value_counts)}")
+                    # value_counts 的值是 numpy.int64，直接放进 dict 会输出 np.int64(4)
+                    counts = {
+                        self._plain_scalar(k): int(v)
+                        for k, v in value_counts.items()
+                    }
+                    results.append(f"{col}: {counts}")
 
             report_text = "\n".join(results)
 
@@ -347,7 +387,8 @@ class DataAnalyzerTool(BaseTool):
                 # 相关性分析（如果有多列）
                 if len(numeric_cols) > 1:
                     result_parts.append("\n=== 相关性矩阵 ===")
-                    corr = df[numeric_cols].corr().round(2).to_string() # type: ignore
+                    # 常量列/全空列算出的相关系数是 NaN，统一显示为 0.0
+                    corr = df[numeric_cols].corr().round(2).fillna(0.0).to_string() # type: ignore
                     result_parts.append(corr)
             
             # 文本列统计

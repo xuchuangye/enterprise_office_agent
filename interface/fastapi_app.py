@@ -9,10 +9,12 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import StreamingResponse
 # BaseModel是一个Python的单体模型，用来针对入参的类型以及格式进行校验
 # 自动进行校验输入输出的类型和格式，类型的提示、序列化
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Iterator
+import json
 import uvicorn
 import logging
 
@@ -81,7 +83,7 @@ async def health_check():
 
 @app.post("/api/chat", response_model=TaskResponse)
 async def chat(request: TaskRequest):
-    """处理用户对话请求"""
+    """处理用户对话请求（阻塞式，保留给不支持流式的调用方）"""
     try:
         result = agent.run(
             user_input=request.user_input,
@@ -96,6 +98,53 @@ async def chat(request: TaskRequest):
     except Exception as e:
         logger.error(f"处理请求失败: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _sse_event(event: Dict[str, Any]) -> str:
+    """把事件编码成 SSE 的 data 帧"""
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
+def _sse_response(event_generator: Iterator[str]) -> StreamingResponse:
+    """统一的 SSE 响应头：关闭缓存和反向代理缓冲，保证 token 实时到达"""
+    return StreamingResponse(
+        event_generator,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: TaskRequest):
+    """
+    流式对话接口（Server-Sent Events）
+
+    事件类型：
+    - status: 执行进度（规划、调用工具等）
+    - token:  LLM 生成的文本增量
+    - result: 最终结果（output / steps / planned / session_id）
+    - error:  执行异常
+    - [DONE]: 结束标记
+    """
+    def event_generator() -> Iterator[str]:
+        try:
+            for event in agent.stream(
+                user_input=request.user_input,
+                session_id=request.session_id,
+                user_id=request.user_id,
+            ):
+                yield _sse_event(event)
+        except Exception as e:
+            logger.error(f"流式处理请求失败: {e}", exc_info=True)
+            yield _sse_event({"type": "error", "message": str(e)})
+        yield "data: [DONE]\n\n"
+
+    return _sse_response(event_generator())
+
 
 @app.get("/api/memory/{session_id}")
 async def get_memory(session_id: str):
@@ -139,6 +188,22 @@ async def knowledge_qa(req: KnowledgeRequest):
     tool = KnowledgeQATool()
     answer = tool._run(question=req.question)
     return {"answer": answer}
+
+
+@app.post("/api/knowledge/qa/stream")
+async def knowledge_qa_stream(req: KnowledgeRequest):
+    """知识问答流式接口（SSE），答案逐 token 返回"""
+    def event_generator() -> Iterator[str]:
+        try:
+            tool = KnowledgeQATool()
+            for chunk in tool.stream_result(question=req.question):
+                yield _sse_event({"type": "token", "content": chunk})
+        except Exception as e:
+            logger.error(f"知识问答流式处理失败: {e}", exc_info=True)
+            yield _sse_event({"type": "error", "message": str(e)})
+        yield "data: [DONE]\n\n"
+
+    return _sse_response(event_generator())
 
 @app.post("/api/knowledge/upload")
 async def upload_document(file: UploadFile = File(...)):
