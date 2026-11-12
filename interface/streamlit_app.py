@@ -8,7 +8,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import uuid
 import json
 import re
@@ -41,6 +41,10 @@ STEP_OBS_EXPAND_THRESHOLD = 300
 # 旧版本历史消息里保存的纯文本前缀，用于兼容已存在的会话
 _LEGACY_RESULT_PREFIX = "### 📝 执行结果\n\n"
 
+# 这些工具的输出本身是给人看的 Markdown（知识库答案、文档正文），继续用富文本渲染；
+# 其余工具（data_analyzer、api_tool）返回定宽文本/JSON，必须用等宽块保留换行和列对齐
+_MARKDOWN_OUTPUT_TOOLS = {"knowledge_qa", "document_generator"}
+
 
 def normalize_steps(steps: Any) -> List[Dict[str, Any]]:
     """
@@ -69,7 +73,38 @@ def normalize_steps(steps: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
-def render_assistant_result(output_text: str, steps: Any = None) -> None:
+def render_tool_observation(tool_name: str, observation: str) -> None:
+    """按工具类型渲染单条工具输出。
+
+    Markdown 会把单个换行折叠成空格、把连续空格压成一个，
+    pandas 统计表和 JSON 会被压成一段、列对齐也会丢失，
+    所以这类定宽文本必须用 st.code 原样渲染。
+    """
+    if tool_name in _MARKDOWN_OUTPUT_TOOLS:
+        st.markdown(safe_markdown(observation))
+    else:
+        st.code(observation, language="text")
+
+
+def _render_result_body(output_text: str, normalized: List[Dict[str, Any]],
+                        planned: bool) -> None:
+    """渲染「完整结果」主体：多步骤任务按步骤逐条重放，避免工具输出粘连成一段"""
+    if planned and normalized:
+        for i, step in enumerate(normalized, 1):
+            st.markdown(f"**步骤 {i} · {step['tool']}**")
+            render_tool_observation(step["tool"], step["observation"])
+            if i < len(normalized):
+                st.markdown("---")
+        return
+    if planned:
+        # 老会话只保存了拼接后的文本、没有步骤明细，至少保留换行
+        st.code(output_text, language="text")
+        return
+    st.markdown(safe_markdown(output_text))
+
+
+def render_assistant_result(output_text: str, steps: Any = None,
+                            planned: Optional[bool] = None) -> None:
     """
     渲染助手回答（结果 + 执行步骤）。
 
@@ -77,13 +112,17 @@ def render_assistant_result(output_text: str, steps: Any = None) -> None:
     Streamlit 每次 rerun 重放 st.session_state.messages 时才能重建折叠组件。
     """
     st.markdown("### 📝 执行结果")
+    normalized = normalize_steps(steps)
+    # 旧消息没有保存 planned 标记，通过规划器拼进 output 的步骤前缀来识别
+    if planned is None:
+        planned = output_text.lstrip().startswith("[步骤1")
+
     if len(output_text) > OUTPUT_EXPAND_THRESHOLD:
         with st.expander("📄 完整结果", expanded=False):
-            st.markdown(safe_markdown(output_text))
+            _render_result_body(output_text, normalized, planned)
     else:
-        st.markdown(safe_markdown(output_text))
+        _render_result_body(output_text, normalized, planned)
 
-    normalized = normalize_steps(steps)
     if not normalized:
         return
 
@@ -95,9 +134,9 @@ def render_assistant_result(output_text: str, steps: Any = None) -> None:
             obs_str = step["observation"]
             if len(obs_str) > STEP_OBS_EXPAND_THRESHOLD:
                 with st.expander("结果详情"):
-                    st.code(obs_str, language="text")
+                    render_tool_observation(step["tool"], obs_str)
             else:
-                st.code(obs_str, language="text")
+                render_tool_observation(step["tool"], obs_str)
             st.markdown("---")
 
 
@@ -200,7 +239,7 @@ if mode == "💬 智能对话":
                 if not steps and content.startswith(_LEGACY_RESULT_PREFIX):
                     content = content[len(_LEGACY_RESULT_PREFIX):]
                 # 与实时回答走同一套渲染，rerun 后折叠面板可以重建
-                render_assistant_result(content, steps)
+                render_assistant_result(content, steps, msg.get("planned"))
             else:
                 st.markdown(safe_markdown(msg.get("content", "")))
                 if msg.get("file_name"):
@@ -260,13 +299,15 @@ if mode == "💬 智能对话":
                 # ---- 实时展示区域（与历史渲染共用同一套逻辑）----
                 output_text = result.get("output", "")
                 steps = normalize_steps(result.get("intermediate_steps"))
-                render_assistant_result(output_text, steps)
+                planned = bool(result.get("planned"))
+                render_assistant_result(output_text, steps, planned)
 
                 # ---- 历史消息存储：保存结构化步骤，rerun 后才能重建折叠面板 ----
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": output_text,
                     "steps": steps,
+                    "planned": planned,
                 })
 
 elif mode == "🔧 工具测试":
