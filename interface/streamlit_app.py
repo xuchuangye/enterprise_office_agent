@@ -32,6 +32,75 @@ def safe_markdown(text: str) -> str:
         return text
     return _SETEXT_UNDERLINE_RE.sub(lambda m: "\\" + m.group(0), text)
 
+
+# 超过该长度时把完整结果收进折叠面板
+OUTPUT_EXPAND_THRESHOLD = 800
+# 单条工具结果超过该长度时，再嵌一层「结果详情」折叠面板
+STEP_OBS_EXPAND_THRESHOLD = 300
+
+# 旧版本历史消息里保存的纯文本前缀，用于兼容已存在的会话
+_LEGACY_RESULT_PREFIX = "### 📝 执行结果\n\n"
+
+
+def normalize_steps(steps: Any) -> List[Dict[str, Any]]:
+    """
+    把执行步骤统一成可存入 session_state 的结构。
+
+    兼容两种来源：
+    - ReAct 的 (AgentAction, observation) 元组
+    - 规划器返回的 {"tool", "tool_input"/"params", "observation"/"error"} 字典
+    """
+    normalized: List[Dict[str, Any]] = []
+    for step in steps or []:
+        if isinstance(step, dict):
+            normalized.append({
+                "tool": step.get("tool", "未知工具"),
+                "tool_input": step.get("tool_input") or step.get("params") or {},
+                "observation": str(step.get("observation", step.get("error", ""))),
+            })
+        elif isinstance(step, (tuple, list)) and len(step) >= 2:
+            action, observation = step[0], step[1]
+            tool_input = getattr(action, "tool_input", {})
+            normalized.append({
+                "tool": getattr(action, "tool", "未知工具"),
+                "tool_input": tool_input if isinstance(tool_input, dict) else {"input": str(tool_input)},
+                "observation": str(observation),
+            })
+    return normalized
+
+
+def render_assistant_result(output_text: str, steps: Any = None) -> None:
+    """
+    渲染助手回答（结果 + 执行步骤）。
+
+    实时回答和历史回答共用这一个函数：只有把渲染逻辑抽出来，
+    Streamlit 每次 rerun 重放 st.session_state.messages 时才能重建折叠组件。
+    """
+    st.markdown("### 📝 执行结果")
+    if len(output_text) > OUTPUT_EXPAND_THRESHOLD:
+        with st.expander("📄 完整结果", expanded=False):
+            st.markdown(safe_markdown(output_text))
+    else:
+        st.markdown(safe_markdown(output_text))
+
+    normalized = normalize_steps(steps)
+    if not normalized:
+        return
+
+    with st.expander("📋 查看执行步骤", expanded=False):
+        for i, step in enumerate(normalized, 1):
+            st.markdown(f"**步骤 {i}：{step['tool']}**")
+            if step["tool_input"]:
+                st.json(step["tool_input"])
+            obs_str = step["observation"]
+            if len(obs_str) > STEP_OBS_EXPAND_THRESHOLD:
+                with st.expander("结果详情"):
+                    st.code(obs_str, language="text")
+            else:
+                st.code(obs_str, language="text")
+            st.markdown("---")
+
+
 # 页面配置
 st.set_page_config(
     page_title="企业智能办公助手",
@@ -124,7 +193,18 @@ if mode == "💬 智能对话":
     for msg in st.session_state.messages:
         # chat_message的列表：'user', 'assistant', 'ai', 'human'
         with st.chat_message(msg["role"]):
-            st.markdown(safe_markdown(msg["content"]))
+            if msg["role"] == "assistant":
+                content = msg.get("content", "")
+                steps = msg.get("steps")
+                # 兼容旧格式：早期历史只存了 "### 📝 执行结果\n\n..." 的纯文本
+                if not steps and content.startswith(_LEGACY_RESULT_PREFIX):
+                    content = content[len(_LEGACY_RESULT_PREFIX):]
+                # 与实时回答走同一套渲染，rerun 后折叠面板可以重建
+                render_assistant_result(content, steps)
+            else:
+                st.markdown(safe_markdown(msg.get("content", "")))
+                if msg.get("file_name"):
+                    st.caption(f"📎 {msg['file_name']}")
     
     # 输入框（支持文件上传）
     prompt = st.chat_input(
@@ -153,11 +233,20 @@ if mode == "💬 智能对话":
         
         if prompt_text.strip():
             # 添加用户消息，其实就是通过状态管理的更新状态
-            st.session_state.messages.append({"role": "user", "content": prompt_text})
+            # file_name 一并保存，rerun 后历史里的 📎 附件标记才不会消失
+            file_name = (
+                os.path.basename(st.session_state.uploaded_file_path)
+                if st.session_state.uploaded_file_path else None
+            )
+            st.session_state.messages.append({
+                "role": "user",
+                "content": prompt_text,
+                "file_name": file_name,
+            })
             with st.chat_message("user"):
                 st.markdown(prompt_text)
-                if st.session_state.uploaded_file_path:
-                    st.caption(f"📎 {os.path.basename(st.session_state.uploaded_file_path)}")
+                if file_name:
+                    st.caption(f"📎 {file_name}")
 
             # 调用 Agent
             with st.chat_message("assistant"):
@@ -167,46 +256,18 @@ if mode == "💬 智能对话":
                         st.session_state.session_id,
                         st.session_state.user_id
                     )
-                
-                # ---- 实时展示区域 ----
+
+                # ---- 实时展示区域（与历史渲染共用同一套逻辑）----
                 output_text = result.get("output", "")
-                st.markdown("### 📝 执行结果")
-                # 结果区域用 Markdown 渲染，支持列表、标题等
-                if len(output_text) > 800:
-                    with st.expander("📄 完整结果", expanded=False):
-                        st.markdown(safe_markdown(output_text))
-                else:
-                    st.markdown(safe_markdown(output_text))
+                steps = normalize_steps(result.get("intermediate_steps"))
+                render_assistant_result(output_text, steps)
 
-                # 执行步骤折叠展示
-                # 折叠的优势：界面简单，不占用空间，可展开，用户交互体验比较好
-                if result.get("intermediate_steps"):
-                    with st.expander("📋 查看执行步骤", expanded=False):
-                        for i, step in enumerate(result["intermediate_steps"], 1):
-                            # 兼容元组格式（ReAct）和字典格式（规划器）
-                            if isinstance(step, tuple):
-                                action, obs = step[0], step[1]
-                                tool_name = action.tool
-                                tool_input = action.tool_input if hasattr(action, 'tool_input') else {}
-                            else:
-                                tool_name = step.get("tool", "未知工具")
-                                tool_input = step.get("tool_input", {})
-                                obs = step.get("observation", "")
-
-                            st.markdown(f"**步骤 {i}：{tool_name}**")
-                            if tool_input:
-                                st.json(tool_input)
-                            obs_str = str(obs)
-                            if len(obs_str) > 300:
-                                with st.expander("结果详情"):
-                                    st.code(obs_str, language="text")
-                            else:
-                                st.code(obs_str, language="text")
-                            st.markdown("---")
-
-                # ---- 历史消息存储（只保留最终结果）----
-                history_md = f"### 📝 执行结果\n\n{output_text}"
-                st.session_state.messages.append({"role": "assistant", "content": history_md})
+                # ---- 历史消息存储：保存结构化步骤，rerun 后才能重建折叠面板 ----
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": output_text,
+                    "steps": steps,
+                })
 
 elif mode == "🔧 工具测试":
     st.subheader("工具单独测试")
