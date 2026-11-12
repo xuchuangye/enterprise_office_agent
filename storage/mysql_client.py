@@ -199,10 +199,10 @@ class MySQLClient:
     def get_conversation_history(self, session_id: str, limit: int = 20) -> List[Dict[str, Any]]:
         """获取对话历史"""
         sql = """
-        SELECT role, content, created_at 
-        FROM conversation_history 
-        WHERE session_id = %s 
-        ORDER BY created_at DESC 
+        SELECT role, content, created_at
+        FROM conversation_history
+        WHERE session_id = %s
+        ORDER BY created_at DESC
         LIMIT %s
         """
         try:
@@ -214,6 +214,44 @@ class MySQLClient:
                     return list(reversed(rows))
         except Exception as e:
             logger.exception(f"获取对话历史失败: {e}")
+            return []
+
+    def get_conversation_window(self, session_id: str, limit: int) -> List[Dict[str, Any]]:
+        """获取会话最近 limit 条消息（按 id 正序，最早的在最前）"""
+        sql = """
+        SELECT id, role, content, created_at
+        FROM conversation_history
+        WHERE session_id = %s
+        ORDER BY id DESC
+        LIMIT %s
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, (session_id, limit))
+                    rows = cursor.fetchall()
+                    return list(reversed(rows))
+        except Exception as e:
+            logger.exception(f"获取对话窗口失败: {e}")
+            return []
+
+    def get_conversation_batch(self, session_id: str, after_id: int,
+                               before_id: int, limit: int) -> List[Dict[str, Any]]:
+        """获取 (after_id, before_id) 区间内的消息，用于滚动生成摘要"""
+        sql = """
+        SELECT id, role, content, created_at
+        FROM conversation_history
+        WHERE session_id = %s AND id > %s AND id < %s
+        ORDER BY id ASC
+        LIMIT %s
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, (session_id, after_id, before_id, limit))
+                    return cursor.fetchall()
+        except Exception as e:
+            logger.exception(f"获取对话批次失败: {e}")
             return []
     
     # ========== 工具调用日志 ==========

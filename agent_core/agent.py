@@ -78,6 +78,9 @@ class OfficeAgent:
 
     开始！
 
+    历史对话摘要（较早对话的压缩结果，仅作为背景事实参考）：
+    {conversation_summary}
+
     历史对话：
     {chat_history}
 
@@ -130,13 +133,16 @@ class OfficeAgent:
         self.tool_registry.register_many(tools)
 
     # 创建Agent执行器
-    def _create_agent_executor(self, session_id: str) -> AgentExecutor:
+    def _create_agent_executor(self, session_id: str,
+                               conversation_summary: str = "") -> AgentExecutor:
         # 注册工具
         tools = self.tool_registry.list_tools()
         if not tools:
             raise ValueError("没有注册任何工具，请先注册工具")
-        # 提示词模板
-        prompt = PromptTemplate.from_template(self.REACT_TEMPLATE)
+        # 提示词模板，提前填充滚动摘要，避免模板变量缺失
+        prompt = PromptTemplate.from_template(self.REACT_TEMPLATE).partial(
+            conversation_summary=conversation_summary or "（无）"
+        )
         # 创建记忆对象，加载历史对话
         memory = CustomConversationMemory(
             memory_key="chat_history",
@@ -195,14 +201,20 @@ class OfficeAgent:
 
     # 复杂任务使用任务规划器
     def _execute_planned_task(self, user_input: str, session_id: str,
-                               user_id: Optional[str] = None) -> Dict[str, Any]:
+                               user_id: Optional[str] = None,
+                               conversation_summary: str = "") -> Dict[str, Any]:
         """多步骤任务执行（使用任务规划器）---双路径的执行策略"""
         # 传入工具实例而不是名称，让规划器能拿到描述和参数 Schema
         available_tools = self.tool_registry.list_tools()
-        task_steps = self.task_planner.plan(user_input, available_tools)
+        task_steps = self.task_planner.plan(
+            user_input, available_tools, conversation_summary=conversation_summary
+        )
         if not task_steps:
             # ReAct适合执行简单任务
-            return self._execute_single_step(user_input, session_id, user_id)
+            return self._execute_single_step(
+                user_input, session_id, user_id,
+                conversation_summary=conversation_summary
+            )
 
         logger.info(f"任务规划成功，共 {len(task_steps)} 个步骤")
         all_steps = []
@@ -254,11 +266,12 @@ class OfficeAgent:
         }
     # 任务简单使用ReAct
     def _execute_single_step(self, user_input: str, session_id: str,
-                             user_id: Optional[str] = None) -> Dict[str, Any]:
+                             user_id: Optional[str] = None,
+                             conversation_summary: str = "") -> Dict[str, Any]:
         """单步任务（ReAct Agent）"""
         try:
             # 创建Agent执行器
-            executor = self._create_agent_executor(session_id)
+            executor = self._create_agent_executor(session_id, conversation_summary)
             user_context = ""
             if user_id:
                 prefs = self.memory_manager.get_all_preferences(user_id)
@@ -302,14 +315,29 @@ class OfficeAgent:
                 "intermediate_steps": [],
                 "session_id": session_id
             }
+        # 先滚动更新摘要：只压缩短期窗口之外的历史，无新内容时不会调用 LLM
+        conversation_summary = ""
+        try:
+            conversation_summary = self.memory_manager.update_summary(
+                session_id, self.llm
+            ) or ""
+        except Exception as e:
+            logger.exception(f"更新对话摘要失败，继续执行: {e}")
+
         if use_planner is None:
             use_planner = self.enable_planner and self._is_complex_task(user_input)
         if use_planner:
             logger.info("使用任务规划器处理请求")
-            return self._execute_planned_task(user_input, session_id, user_id)
+            return self._execute_planned_task(
+                user_input, session_id, user_id,
+                conversation_summary=conversation_summary
+            )
         else:
             logger.info("使用ReAct Agent处理请求")
-            return self._execute_single_step(user_input, session_id, user_id)
+            return self._execute_single_step(
+                user_input, session_id, user_id,
+                conversation_summary=conversation_summary
+            )
 
     def clear_session(self, session_id: str):
         self.memory_manager.clear_session(session_id)

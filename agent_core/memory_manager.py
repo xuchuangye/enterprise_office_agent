@@ -163,6 +163,124 @@ class MemoryManager:
         return result
     
     # ========== 记忆摘要（用于上下文压缩）==========
+    @staticmethod
+    def _truncate_message(content: str, max_chars: int) -> str:
+        """截断单条消息，避免超长内容挤占摘要上下文"""
+        if len(content) <= max_chars:
+            return content
+        return content[:max_chars] + "…（该消息已截断）"
+
+    def _build_summary_prompt(self, previous_summary: str, messages: List[Dict[str, Any]]) -> str:
+        """构建滚动摘要提示词，同时限制单条消息和整体上下文的长度"""
+        max_context_chars = settings.MEMORY_CONTEXT_MAX_CHARS
+        lines = []
+        used_chars = 0
+        for message in messages:
+            content = self._truncate_message(
+                str(message.get("content", "")),
+                settings.MEMORY_SUMMARY_MESSAGE_MAX_CHARS,
+            )
+            role = "用户" if message.get("role") == "user" else "助手"
+            line = f"{role}: {content}"
+            # 至少保留一条，超出的较早内容直接省略，控制 prompt 体积
+            if lines and used_chars + len(line) + 1 > max_context_chars:
+                lines.append("（更早内容已省略）")
+                break
+            lines.append(line)
+            used_chars += len(line) + 1
+        conversation = "\n".join(lines) or "（无）"
+
+        previous = (previous_summary or "").strip()
+        if len(previous) > settings.MEMORY_SUMMARY_MAX_CHARS:
+            previous = previous[:settings.MEMORY_SUMMARY_MAX_CHARS] + "…（摘要已截断）"
+
+        return (
+            "你是一个会话记忆压缩助手。请把【已有摘要】与【新对话】合并成一段简洁、"
+            "事实准确的摘要，保留关键信息、用户需求、已确认的结论以及未完成事项，"
+            "不要编造对话中没有出现的内容。\n\n"
+            f"【已有摘要】\n{previous or '（无）'}\n\n"
+            f"【新对话】\n{conversation}\n\n"
+            "请只输出合并后的摘要正文："
+        )
+
+    def update_summary(self, session_id: str, llm=None) -> str:
+        """
+        滚动更新会话摘要（上下文压缩）
+
+        只摘要“短期窗口之外”的历史消息，并按 MEMORY_SUMMARY_BATCH_SIZE 分批调用 LLM，
+        用 user_preferences 里的 summary_state 记录 (summary, last_message_id) 游标。
+        LLM 返回空内容时不推进游标，避免丢失未摘要的对话。
+
+        Args:
+            session_id: 会话ID（不带 chat: 前缀）
+            llm: LLM实例
+
+        Returns:
+            当前摘要；没有可摘要内容或失败时返回原摘要/空串
+        """
+        if not llm:
+            return ""
+
+        state = self.get_preference(f"session:{session_id}", "summary_state")
+        if isinstance(state, str):
+            try:
+                state = json.loads(state)
+            except (TypeError, ValueError):
+                state = {}
+        if not isinstance(state, dict):
+            state = {}
+        # 获取上次摘要和游标
+        previous_summary = str(state.get("summary") or "")
+        try:
+            last_message_id = int(state.get("last_message_id") or 0)
+        except (TypeError, ValueError):
+            last_message_id = 0
+
+        # 短期窗口内的消息保持原样，只压缩窗口之外的部分
+        window = self.mysql.get_conversation_window(
+            session_id, settings.SHORT_TERM_MEMORY_MAX_LENGTH
+        ) or []
+        if not window:
+            return previous_summary
+        cutoff_id = int(window[0]["id"]) - 1
+        if cutoff_id <= last_message_id:
+            return previous_summary
+
+        summary = previous_summary
+        while last_message_id < cutoff_id:
+            batch = self.mysql.get_conversation_batch(
+                session_id,
+                last_message_id,
+                cutoff_id + 1,
+                settings.MEMORY_SUMMARY_BATCH_SIZE,
+            ) or []
+            if not batch:
+                break
+
+            prompt = self._build_summary_prompt(summary, batch)
+            try:
+                response = llm.invoke(prompt)
+            except Exception as e:
+                logger.exception(f"生成对话摘要失败: {e}")
+                return ""
+
+            response = str(response or "").strip()
+            if not response:
+                logger.warning("LLM 返回空摘要，保留原摘要并且不推进游标")
+                return ""
+
+            summary = response
+            last_message_id = int(batch[-1]["id"])
+        # 如果新的摘要的游标与原摘要的游标不同，说明有新的内容被摘要了，更新 summary_state
+        # 同时记录当前的session_id和last_message_id，方便下次摘要时从上次的游标继续
+        if summary != previous_summary:
+            self.set_preference(
+                f"session:{session_id}",
+                "summary_state",
+                {"summary": summary, "last_message_id": last_message_id},
+            )
+        return summary
+
     def generate_summary(self, session_id: str, llm=None) -> str:
         """
         生成会话摘要（调用LLM总结对话）
@@ -174,7 +292,7 @@ class MemoryManager:
         Returns:
             摘要字符串
         """
-        messages = self.get_messages(session_id, limit=20)
+        messages = self.get_messages(session_id, limit=20)  # 获取最近20条消息，包括用户和助手的对话
         if not messages or not llm:
             return "会话暂无足够内容"
         
@@ -202,8 +320,10 @@ load_dotenv()
 # 获取API Key
 api_key = os.getenv("DASHSCOPE_API_KEY")
 
-from langchain_openai import OpenAI
-llm = OpenAI(model="qwen-plus", api_key=str(api_key), base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
+from langchain_community.llms import Tongyi
+llm = Tongyi(model_name=settings.LLM_MODEL_NAME, api_key=api_key)
 if __name__ == "__main__":
     memoryManager = MemoryManager()
-    print(memoryManager.generate_summary("chat:6f987630-2973-41d5-b775-5b27ce47be01", llm=llm))  # 测试生成摘要
+    # 支持 python agent_core/memory_manager.py <session_id>，session_id 不带 chat: 前缀
+    session_id = sys.argv[1] if len(sys.argv) > 1 else "test_001"
+    print(memoryManager.update_summary(session_id, llm=llm))  # 测试滚动生成摘要
