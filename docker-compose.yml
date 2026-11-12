@@ -1,36 +1,62 @@
-version: '3.8'
-
+# 本机的 3306/6379 很可能已被本地 MySQL、Redis 占用，所以数据库端口映射到 3307/6380。
+# 容器之间仍然通过服务名和容器内端口通信：mysql:3306、redis:6379。
 services:
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   mysql:
     image: mysql:8.0
+    restart: unless-stopped
     ports:
-      - "3306:3306"
+      - "3307:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_ROOT_PASSWORD: "123456"
       MYSQL_DATABASE: office_assistant
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
 
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "8000:8000"
       - "8501:8501"
+    # 等 MySQL 真正可连接后再启动，否则建表和首次查询会失败
     depends_on:
-      - redis
-      - mysql
+      redis:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - MYSQL_HOST=mysql
-      - MYSQL_PASSWORD=123456
-      - DASHSCOPE_API_KEY=sk-c1cb8854348d42809177744c55bd8cd5
+      REDIS_URL: redis://redis:6379/0
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: "123456"
+      MYSQL_DATABASE: office_assistant
+      LLM_MODEL_NAME: ${LLM_MODEL_NAME:-qwen-plus}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请在 .env 中设置 DASHSCOPE_API_KEY}
+      TZ: Asia/Shanghai
     volumes:
       - ./data:/app/data
 

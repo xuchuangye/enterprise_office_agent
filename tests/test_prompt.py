@@ -23,7 +23,7 @@ prompt = PromptTemplate(
 # 填充模板
 formatted_prompt = prompt.format(
     role="专业的财务分析师",
-    company="白泽科技公司", 
+    company="ALI科技公司", 
     document_type="年度报告", 
     style="正式商务", 
     requirements="数据详实，分析深入",

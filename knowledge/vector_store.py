@@ -5,8 +5,6 @@ import os
 import logging
 from typing import List, Optional
 from langchain_chroma import Chroma # 为什么使用Chroma？轻量级，非常适合RAG应用，开源，免费，易于使用，支持持久化，与LangChain无缝集成
-from langchain_milvus import Milvus
-from langchain_pinecone import Pinecone
 from langchain_core.documents import Document
 
 from config.settings import settings

@@ -19,7 +19,7 @@ from knowledge.embeddings import get_embeddings
 embeddings = get_embeddings()
 
 # 测试文本向量化
-text = "零基础，学AI，找白泽，不踩坑"
+text = "卖火柴的小女孩"
 # 向量化查询文本，得到一个文本的向量表示
 vector = embeddings.embed_query(text)
 

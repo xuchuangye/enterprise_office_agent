@@ -43,7 +43,7 @@ agent = OfficeAgent(llm=llm, enable_planner=True)
 
 # 生成工具方法
 def hello_tool(name: str) -> str:
-    return f"你好，{name}。我是白泽，很高兴认识你。"
+    return f"你好，{name}。我是小明 ，很高兴认识你。"
 
 # 创建工具实例
 tool = Tool(

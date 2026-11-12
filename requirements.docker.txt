@@ -13,7 +13,9 @@ dashscope>=1.14.0  # 通义千问SDK
 # Web框架
 fastapi>=0.104.0
 uvicorn>=0.24.0
-streamlit>=1.28.0
+python-multipart>=0.0.9  # FastAPI 的 UploadFile/File 表单解析必需
+# 必须 >=1.40：旧版本禁止 expander 嵌套，前端「查看执行步骤 → 结果详情」会直接报错
+streamlit==1.65.0
 
 # 数据处理
 pandas>=2.0.0
@@ -33,6 +35,8 @@ tokenizers>=0.19.1
 # 数据库
 redis>=4.5.0
 pymysql>=1.1.0
+DBUtils>=3.0.0  # mysql_client.py 的连接池依赖
+cryptography>=41.0.0  # MySQL 8 默认 caching_sha2_password 认证必需
 
 # 配置管理
 pydantic>=2.0.0
