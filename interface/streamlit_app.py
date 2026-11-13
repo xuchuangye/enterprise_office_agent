@@ -329,7 +329,12 @@ if mode == "💬 智能对话":
                 output_text = result.get("output", "")
                 steps = normalize_steps(result.get("steps"))
                 planned = bool(result.get("planned"))
-                render_assistant_result(output_text, steps, planned)
+                # 结果必须画在 answer_box 占位符内部，不能作为它后面的兄弟元素。
+                # 否则本轮结束时该消息的元素结构是 [空占位, 占位, 标题, 正文]，
+                # 而历史重放时是 [标题, 正文]；rerun 时 Streamlit 按位置复用元素，
+                # 旧的标题/正文不会被覆盖，会以灰色“幽灵”形式在等待期间多显示一遍。
+                with answer_box.container():
+                    render_assistant_result(output_text, steps, planned)
 
                 # ---- 历史消息存储：保存结构化步骤，rerun 后才能重建折叠面板 ----
                 st.session_state.messages.append({
