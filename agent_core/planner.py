@@ -9,8 +9,12 @@ import logging
 from pydantic import ValidationError
 from langchain_community.llms import Tongyi
 from config.settings import settings
+from evaluation.metrics import collector, MetricsCallbackHandler
 
 logger = logging.getLogger(__name__)
+
+# 全局复用一个 CallbackHandler 实例（线程安全）
+_metrics_callback = MetricsCallbackHandler()
 
 
 class TaskPlanner:
@@ -38,7 +42,13 @@ class TaskPlanner:
                 user_input, available_tools, conversation_summary
             )
             if llm_plan:
+                collector.record_planner_llm_success()
                 return llm_plan
+            # LLM 规划失败 → 规则兜底
+            collector.record_planner_rule_fallback()
+        else:
+            # 无 LLM 可用也算规则兜底触发
+            collector.record_planner_rule_fallback()
         # 2. 规则降级，也就是预设规则规划模式
         return self._rule_based_plan(user_input)
 
@@ -180,7 +190,7 @@ class TaskPlanner:
         """
 
         try:
-            response = self.llm.invoke(prompt) # type: ignore
+            response = self.llm.invoke(prompt, config={"callbacks": [_metrics_callback]}) # type: ignore
             tasks = self._parse_plan(response)
             if not tasks:
                 logger.error("LLM规划结果为空或不是有效的JSON数组")
@@ -198,7 +208,7 @@ class TaskPlanner:
                 + "\n\n你上一次生成的结果存在以下问题，请逐条修正后重新输出完整的JSON数组：\n"
                 + "\n".join(errors)
             )
-            response = self.llm.invoke(retry_prompt) # type: ignore
+            response = self.llm.invoke(retry_prompt, config={"callbacks": [_metrics_callback]}) # type: ignore
             tasks = self._parse_plan(response)
             if not tasks:
                 return None

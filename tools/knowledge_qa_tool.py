@@ -14,6 +14,7 @@ from knowledge.embeddings import get_embeddings
 from langchain_community.llms import Tongyi
 # from langchain.llms.base import BaseLLM
 from langchain_core.language_models.llms import BaseLLM
+from evaluation.metrics import collector, MetricsCallbackHandler, check_rag_alignment
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +121,23 @@ class KnowledgeQATool(BaseTool):
 
             # 2. 如果有LLM，使用RAG生成答案
             if self._llm:
-                response = self._llm.invoke(self._build_prompt(context, question))
+                response = self._llm.invoke(
+                    self._build_prompt(context, question),
+                    config={"callbacks": [MetricsCallbackHandler()]}
+                )
                 answer = response.strip()
 
                 # 添加来源信息（如果LLM未包含）
                 if "来源" not in answer and "参考资料" not in answer:
                     answer += f"\n\n📚 参考来源：{', '.join(sources)}"
+
+                # RAG 幻觉率校验：答案是否与检索片段对齐
+                try:
+                    aligned, hallucinated = check_rag_alignment(answer, context)
+                    collector.record_rag_qa_result(aligned=aligned, hallucinated=hallucinated)
+                except Exception:
+                    # 校验失败不影响主流程
+                    pass
             else:
                 answer = self._fallback_answer(docs, sources)
 
@@ -150,7 +162,10 @@ class KnowledgeQATool(BaseTool):
 
             # Tongyi 实现了 _stream，llm.stream 会逐 token 产出
             answer_parts = []
-            for chunk in self._llm.stream(self._build_prompt(context, question)):
+            for chunk in self._llm.stream(
+                self._build_prompt(context, question),
+                config={"callbacks": [MetricsCallbackHandler()]}
+            ):
                 text = chunk if isinstance(chunk, str) else str(chunk)
                 if text:
                     answer_parts.append(text)
@@ -159,6 +174,13 @@ class KnowledgeQATool(BaseTool):
             answer = "".join(answer_parts).strip()
             if "来源" not in answer and "参考资料" not in answer:
                 yield f"\n\n📚 参考来源：{', '.join(sources)}"
+
+            # RAG 幻觉率校验：答案是否与检索片段对齐
+            try:
+                aligned, hallucinated = check_rag_alignment(answer, context)
+                collector.record_rag_qa_result(aligned=aligned, hallucinated=hallucinated)
+            except Exception:
+                pass
 
         except Exception as e:
             logger.error(f"知识问答流式输出失败: {e}")

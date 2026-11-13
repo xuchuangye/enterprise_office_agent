@@ -184,8 +184,8 @@ if "user_id" not in st.session_state:
 # 状态管理器的最佳实践：如果messages没有被状态管理，就添加管理，这是存储会话历史    
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "uploaded_file_path" not in st.session_state:
-    st.session_state.uploaded_file_path = None
+# 注意：上传文件不放进 session_state。附件只属于提交它的那一条消息，
+# 跨轮次保留会让下一轮无关问题继续携带上一轮的 Excel/CSV 路径。
 
 # ========== 侧边栏 ==========
 with st.sidebar:
@@ -202,7 +202,6 @@ with st.sidebar:
         st.session_state.session_id = str(uuid.uuid4())
         # 如果messages没有被状态管理，那么就添加状态管理，这就是存储会话历史
         st.session_state.messages = []
-        st.session_state.uploaded_file_path = None
         st.rerun()
     
     st.markdown("---")
@@ -213,11 +212,7 @@ with st.sidebar:
         "选择模式",
         ["💬 智能对话", "🔧 工具测试", "📚 知识库管理", "⚙️ 用户偏好"]
     )
-    
-    # 切换模式时清除上传文件状态
-    if mode != "💬 智能对话":
-        st.session_state.uploaded_file_path = None
-    
+
     st.markdown("---")
     st.caption(f"版本: 2.0.0")
 
@@ -253,7 +248,11 @@ if mode == "💬 智能对话":
     )
     
     if prompt:
-        # 处理文件上传
+        prompt_text = (prompt.text or "").strip()
+
+        # 附件只属于本次提交：保存到磁盘后用局部变量传递，
+        # 不写入 session_state，下一轮对话就不会再带上这次的文件
+        uploaded_paths: List[str] = []
         if prompt.files:
             upload_dir = "data/uploads"
             os.makedirs(upload_dir, exist_ok=True)
@@ -261,22 +260,21 @@ if mode == "💬 智能对话":
                 file_path = os.path.join(upload_dir, file.name)
                 with open(file_path, "wb") as f:
                     f.write(file.getbuffer())
-                st.session_state.uploaded_file_path = file_path
+                uploaded_paths.append(file_path)
                 st.success(f"📁 文件已上传: {file.name}")
 
-        prompt_text = prompt.text or ""
-        # 构建最终输入（如果有上传文件，自动附加路径）
+        # 构建最终输入（仅本次提交携带附件路径）
         final_input = prompt_text
-        if st.session_state.uploaded_file_path:
-            final_input = f"{prompt_text}，文件路径: {st.session_state.uploaded_file_path}"
-        
-        if prompt_text.strip():
+        if uploaded_paths:
+            final_input = f"{prompt_text}，文件路径: {', '.join(uploaded_paths)}"
+
+        if uploaded_paths and not prompt_text:
+            # 只传文件不提问时，明确告知文件不会保留到下一轮
+            st.warning("📎 附件只对同一条消息生效，请在同一条消息中输入问题后一起发送。")
+        elif prompt_text:
             # 添加用户消息，其实就是通过状态管理的更新状态
             # file_name 一并保存，rerun 后历史里的 📎 附件标记才不会消失
-            file_name = (
-                os.path.basename(st.session_state.uploaded_file_path)
-                if st.session_state.uploaded_file_path else None
-            )
+            file_name = "、".join(os.path.basename(p) for p in uploaded_paths) or None
             st.session_state.messages.append({
                 "role": "user",
                 "content": prompt_text,

@@ -67,10 +67,10 @@ class Settings(BaseSettings):
     # ========== 记忆模块配置 ==========
     SHORT_TERM_MEMORY_MAX_LENGTH: int = 10  # 短期记忆最大保留条数
     LONG_TERM_MEMORY_PREFIX: str = "user_memory:"  # Redis key前缀
-    MEMORY_SUMMARY_BATCH_SIZE: int = 8
-    MEMORY_SUMMARY_MAX_CHARS: int = 2500
-    MEMORY_SUMMARY_MESSAGE_MAX_CHARS: int = 2500
-    MEMORY_CONTEXT_MAX_CHARS: int = 12000
+    MEMORY_SUMMARY_BATCH_SIZE: int = 8      # 批量生成摘要的批次大小
+    MEMORY_SUMMARY_MAX_CHARS: int = 2500    # 单条消息最大字符数
+    MEMORY_SUMMARY_MESSAGE_MAX_CHARS: int = 2500    # 单条消息最大字符数
+    MEMORY_CONTEXT_MAX_CHARS: int = 12000   # 上下文最大字符数
     
     # ========== 反思模块配置 ==========
     MAX_RETRY_COUNT: int = 3  # 最大重试次数

@@ -39,7 +39,7 @@ agent.register_tools([data_analyzer])
 session_id = "test_session001"
 
 print(f"测试第一轮对话：\n")
-result = agent.run("你好，我叫白泽。", session_id=session_id)
+result = agent.run("你好，我叫小明。", session_id=session_id)
 print(f"{result['output']}\n")
 
 print(f"测试第二轮对话：\n")

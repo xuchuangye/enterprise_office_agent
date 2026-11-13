@@ -21,7 +21,7 @@ vectorstore_manager = VectorStoreManager(collection_name="test_rag_qa_001")
 # 添加文档
 documents = [
     Document(page_content="这是一个测试文档", metadata={"source": "test_001", "page": 1}),
-    Document(page_content="企业智能办公助手系统是白泽开发的一款基于大模型的企业办公辅助工具", metadata={"source": "test_002", "page": 1}),
+    Document(page_content="企业智能办公助手系统是开发的一款基于大模型的企业办公辅助工具", metadata={"source": "test_002", "page": 1}),
 ]
 
 # 在向量数据库中添加文档

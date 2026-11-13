@@ -7,6 +7,7 @@ import os
 import queue
 import threading
 import uuid
+import time
 from typing import Optional, List, Dict, Any, Iterator
 import logging
 
@@ -29,6 +30,7 @@ from .tool_registry import ToolRegistry
 from .reflection import Reflection
 from .planner import TaskPlanner
 from .streaming import StreamingCallbackHandler, EventSink
+from evaluation.metrics import collector, MetricsCallbackHandler
 
 logger = logging.getLogger(__name__)
 
@@ -257,9 +259,11 @@ class OfficeAgent:
                         chunks.append(chunk)
                         event_sink({"type": "token", "content": chunk})
                     observation = "".join(chunks)
+                    collector.record_tool_call(True)
                 else:
                     # 修复：使用标准调用 tool.invoke(params)
                     observation = tool.invoke(tool_params)
+                    collector.record_tool_call(True)
                 all_steps.append({
                     "tool": tool_name,
                     "tool_input": tool_params,
@@ -277,6 +281,7 @@ class OfficeAgent:
             except Exception as e:
                 error_msg = f"执行出错: {str(e)}"
                 logger.error(f"步骤 {i+1} 执行失败: {e}")
+                collector.record_tool_call(False)
                 all_steps.append({"step": i+1, "tool": tool_name, "error": error_msg})
                 final_output += f"\n[步骤{i+1} 出错] {error_msg}"
 
@@ -304,9 +309,10 @@ class OfficeAgent:
             if event_sink:
                 event_sink({"type": "status", "message": "正在思考并选择工具…"})
             # ReAct 代理内部走 LLM.stream，挂回调即可在阻塞调用期间拿到 token
-            config = None
+            # MetricsCallbackHandler 自动统计 LLM 调用次数 / token usage / TTFT
+            config = {"callbacks": [MetricsCallbackHandler()]}
             if event_sink:
-                config = {"callbacks": [StreamingCallbackHandler(event_sink)]}
+                config["callbacks"].append(StreamingCallbackHandler(event_sink))
             # 执行Agent，获取结果和中间步骤
             result = executor.invoke({"input": user_input + user_context}, config=config)
             steps = result.get("intermediate_steps", [])
@@ -340,39 +346,43 @@ class OfficeAgent:
                       use_planner: Optional[bool] = None,
                       event_sink: Optional[EventSink] = None) -> Dict[str, Any]:
         """同步执行主流程；event_sink 不为空时额外推送进度和 token 事件"""
-        if not self.llm:
-            return {
-                "output": "LLM未初始化，请配置API Key后重试。",
-                "intermediate_steps": [],
-                "session_id": session_id
-            }
-        # 先滚动更新摘要：只压缩短期窗口之外的历史，无新内容时不会调用 LLM
-        if event_sink:
-            event_sink({"type": "status", "message": "正在整理历史对话…"})
-        conversation_summary = ""
+        start_time = time.time()
         try:
-            conversation_summary = self.memory_manager.update_summary(
-                session_id, self.llm
-            ) or ""
-        except Exception as e:
-            logger.exception(f"更新对话摘要失败，继续执行: {e}")
+            if not self.llm:
+                return {
+                    "output": "LLM未初始化，请配置API Key后重试。",
+                    "intermediate_steps": [],
+                    "session_id": session_id
+                }
+            # 先滚动更新摘要：只压缩短期窗口之外的历史，无新内容时不会调用 LLM
+            if event_sink:
+                event_sink({"type": "status", "message": "正在整理历史对话…"})
+            conversation_summary = ""
+            try:
+                conversation_summary = self.memory_manager.update_summary(
+                    session_id, self.llm
+                ) or ""
+            except Exception as e:
+                logger.exception(f"更新对话摘要失败，继续执行: {e}")
 
-        if use_planner is None:
-            use_planner = self.enable_planner and self._is_complex_task(user_input)
-        if use_planner:
-            logger.info("使用任务规划器处理请求")
-            return self._execute_planned_task(
-                user_input, session_id, user_id,
-                conversation_summary=conversation_summary,
-                event_sink=event_sink
-            )
-        else:
-            logger.info("使用ReAct Agent处理请求")
-            return self._execute_single_step(
-                user_input, session_id, user_id,
-                conversation_summary=conversation_summary,
-                event_sink=event_sink
-            )
+            if use_planner is None:
+                use_planner = self.enable_planner and self._is_complex_task(user_input)
+            if use_planner:
+                logger.info("使用任务规划器处理请求")
+                return self._execute_planned_task(
+                    user_input, session_id, user_id,
+                    conversation_summary=conversation_summary,
+                    event_sink=event_sink
+                )
+            else:
+                logger.info("使用ReAct Agent处理请求")
+                return self._execute_single_step(
+                    user_input, session_id, user_id,
+                    conversation_summary=conversation_summary,
+                    event_sink=event_sink
+                )
+        finally:
+            collector.record_e2e_latency(time.time() - start_time)
 
     def run(self, user_input: str, session_id: Optional[str] = None,
             user_id: Optional[str] = None, use_planner: Optional[bool] = None) -> Dict[str, Any]:

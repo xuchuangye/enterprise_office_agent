@@ -7,8 +7,12 @@ import json
 import logging
 
 from langchain_community.llms import Tongyi
+from evaluation.metrics import MetricsCallbackHandler
 
 logger = logging.getLogger(__name__)
+
+# 全局复用一个 CallbackHandler 实例
+_metrics_callback = MetricsCallbackHandler()
 
 
 class Reflection:
@@ -49,7 +53,7 @@ class Reflection:
         """
         
         try:
-            response = self.llm.invoke(prompt) # type: ignore
+            response = self.llm.invoke(prompt, config={"callbacks": [_metrics_callback]}) # type: ignore
             # 提取JSON对象
             start = response.find('{')
             end = response.rfind('}') + 1
@@ -108,7 +112,7 @@ class Reflection:
                 请返回一个新的任务步骤列表，JSON数组格式。
                 """
             try:
-                response = self.llm.invoke(prompt)
+                response = self.llm.invoke(prompt, config={"callbacks": [_metrics_callback]})
                 start = response.find('[')
                 end = response.rfind(']') + 1
                 if start != -1 and end > start:
@@ -132,7 +136,7 @@ class Reflection:
                 总结：
                 """
             try:
-                return self.llm.invoke(prompt).strip()
+                return self.llm.invoke(prompt, config={"callbacks": [_metrics_callback]}).strip()
             except Exception as e:
                 logger.error(f"LLM反思总结失败: {e}")
         

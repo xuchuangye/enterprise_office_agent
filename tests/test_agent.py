@@ -43,7 +43,7 @@ agent = OfficeAgent(llm=llm, enable_planner=True)
 
 # 生成工具方法
 def hello_tool(name: str) -> str:
-    return f"你好，{name}。我是小明 ，很高兴认识你。"
+    return f"你好，{name}。我是小明，很高兴认识你。"
 
 # 创建工具实例
 tool = Tool(
@@ -95,26 +95,26 @@ logger.info(f"问答：{result['output']}")
 agent.clear_session(session_id)
 
 # 天气参数输入的类
-class WeatherInput(BaseModel):
-    city: str = Field(..., description="城市名称，例如：北京、上海、广州等。")
-    date: str = Field(default="今天", description="日期，例如：2024-06-01。")
+# class WeatherInput(BaseModel):
+#     city: str = Field(..., description="城市名称，例如：北京、上海、广州等。")
+#     date: str = Field(default="今天", description="日期，例如：2024-06-01。")
 
 # 定义查询天气的工具
-def get_weather_tool(city: str, date: str = "今天") -> str:
-    # 这里可以调用实际的天气API获取天气信息
-    return f"{city}{date}的天气是晴天，温度25摄氏度。"
+# def get_weather_tool(city: str, date: str = "今天") -> str:
+#     # 这里可以调用实际的天气API获取天气信息
+#     return f"{city}{date}的天气是晴天，温度25摄氏度。"
 
-get_weather_tool = StructuredTool.from_function(
-    func = get_weather_tool,
-    name = "get_weather",
-    description = "获取指定城市指定日期的天气信息。",
-    args_schema =WeatherInput,
-    ) # type: ignore
-weather_tool = [get_weather_tool]
-agent.register_tools(weather_tool)
+# get_weather_tool = StructuredTool.from_function(
+#     func = get_weather_tool,
+#     name = "get_weather",
+#     description = "获取指定城市指定日期的天气信息。",
+#     args_schema =WeatherInput,
+#     ) # type: ignore
+# weather_tool = [get_weather_tool]
+# agent.register_tools(weather_tool)
 
 # 测试简单任务
-print("=========================测试简单任务=========================")
-result = agent.run("查询北京的天气")
-print("问答：", result["output"])
-print("中间步骤：", result["intermediate_steps"])
+# print("=========================测试简单任务=========================")
+# result = agent.run("查询北京的天气")
+# print("问答：", result["output"])
+# print("中间步骤：", result["intermediate_steps"])
