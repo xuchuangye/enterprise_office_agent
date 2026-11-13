@@ -30,6 +30,8 @@ wheels/
 *.swp
 *.swo
 *~
+# Test
+.tests/
 
 # Environment variables
 .env
